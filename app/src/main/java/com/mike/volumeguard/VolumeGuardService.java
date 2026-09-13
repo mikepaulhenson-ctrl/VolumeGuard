@@ -22,9 +22,11 @@ public class VolumeGuardService extends Service {
     public static final String ACTION_STOP = "com.mike.volumeguard.action.STOP";
     public static final String ACTION_UPDATE = "com.mike.volumeguard.action.UPDATE";
     public static final String EXTRA_TARGET_PERCENT = "target_percent";
+    public static final String EXTRA_MINIMUM_PERCENT = "minimum_percent";
 
     private static final String PREFS = "volume_guard";
     private static final String KEY_TARGET = "target_percent";
+    private static final String KEY_MINIMUM = "minimum_percent";
     private static final String CHANNEL_ID = "volume_guard_active";
     private static final int NOTIFICATION_ID = 4207;
     private static final long POLL_MS = 700L;
@@ -33,6 +35,7 @@ public class VolumeGuardService extends Service {
     private Handler handler;
     private SharedPreferences prefs;
     private int targetPercent = 80;
+    private int minimumPercent = 50;
     private boolean active;
     private static volatile boolean running;
 
@@ -52,6 +55,7 @@ public class VolumeGuardService extends Service {
         handler = new Handler(Looper.getMainLooper());
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         targetPercent = clampPercent(prefs.getInt(KEY_TARGET, 80));
+        minimumPercent = Math.min(targetPercent, clampPercent(prefs.getInt(KEY_MINIMUM, 50)));
         createNotificationChannel();
     }
 
@@ -66,8 +70,12 @@ public class VolumeGuardService extends Service {
 
         if (intent != null && intent.hasExtra(EXTRA_TARGET_PERCENT)) {
             targetPercent = clampPercent(intent.getIntExtra(EXTRA_TARGET_PERCENT, targetPercent));
-            prefs.edit().putInt(KEY_TARGET, targetPercent).apply();
         }
+        if (intent != null && intent.hasExtra(EXTRA_MINIMUM_PERCENT)) {
+            minimumPercent = clampPercent(intent.getIntExtra(EXTRA_MINIMUM_PERCENT, minimumPercent));
+        }
+        minimumPercent = Math.min(minimumPercent, targetPercent);
+        prefs.edit().putInt(KEY_TARGET, targetPercent).putInt(KEY_MINIMUM, minimumPercent).apply();
 
         if (ACTION_UPDATE.equals(action)) {
             if (active) {
@@ -118,11 +126,12 @@ public class VolumeGuardService extends Service {
         if (max <= 0) return;
 
         int current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
-        int desired = Math.max(1, Math.round(max * (targetPercent / 100f)));
+        int minimumIndex = Math.max(1, (int) Math.ceil(max * (minimumPercent / 100f)));
+        int desiredIndex = Math.max(minimumIndex, Math.round(max * (targetPercent / 100f)));
 
-        if (current < desired) {
+        if (current < minimumIndex) {
             try {
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, desired, 0);
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, desiredIndex, 0);
             } catch (SecurityException ignored) {
             }
         }
@@ -131,26 +140,14 @@ public class VolumeGuardService extends Service {
     private Notification buildNotification() {
         Intent openIntent = new Intent(this, MainActivity.class);
         PendingIntent openPending = PendingIntent.getActivity(
-                this,
-                0,
-                openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+                this, 0, openIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         Intent stopIntent = new Intent(this, VolumeGuardService.class);
         stopIntent.setAction(ACTION_STOP);
         PendingIntent stopPending = PendingIntent.getService(
-                this,
-                1,
-                stopIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+                this, 1, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        Notification.Action stopAction = new Notification.Action.Builder(
-                null,
-                "Stop",
-                stopPending
-        ).build();
+        Notification.Action stopAction = new Notification.Action.Builder(null, "Stop", stopPending).build();
 
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL_ID)
@@ -159,7 +156,7 @@ public class VolumeGuardService extends Service {
         return builder
                 .setSmallIcon(R.drawable.ic_volume_guard)
                 .setContentTitle("Volume Guard is active")
-                .setContentText("Restoring media volume below " + targetPercent + "%")
+                .setContentText("Below " + minimumPercent + "% → restore to " + targetPercent + "%")
                 .setContentIntent(openPending)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -169,7 +166,8 @@ public class VolumeGuardService extends Service {
     }
 
     private void updateNotification() {
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         manager.notify(NOTIFICATION_ID, buildNotification());
     }
 
@@ -177,16 +175,14 @@ public class VolumeGuardService extends Service {
         if (Build.VERSION.SDK_INT < 26) return;
 
         NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "Volume Guard",
-                NotificationManager.IMPORTANCE_LOW
-        );
+                CHANNEL_ID, "Volume Guard", NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Shows when Volume Guard is actively watching media volume.");
         channel.enableLights(false);
         channel.enableVibration(false);
         channel.setLightColor(Color.TRANSPARENT);
 
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         manager.createNotificationChannel(channel);
     }
 
