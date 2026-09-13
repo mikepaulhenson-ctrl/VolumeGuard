@@ -23,14 +23,17 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "volume_guard";
     private static final String KEY_TARGET = "target_percent";
+    private static final String KEY_MINIMUM = "minimum_percent";
     private static final String KEY_ACK = "hearing_ack";
 
     private SharedPreferences prefs;
     private AudioManager audioManager;
     private TextView targetLabel;
+    private TextView minimumLabel;
     private TextView currentLabel;
     private TextView statusLabel;
     private SeekBar targetSeek;
+    private SeekBar minimumSeek;
     private CheckBox acknowledgement;
     private Button startButton;
     private Button stopButton;
@@ -39,10 +42,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-
         requestNotificationsIfNeeded();
         setContentView(buildUi());
         refreshUi();
@@ -66,7 +67,7 @@ public class MainActivity extends Activity {
         title.setTextColor(Color.WHITE);
         root.addView(title);
 
-        TextView subtitle = text("Keep your media volume from being quietly reduced while Guard is active.", 16, false);
+        TextView subtitle = text("Protect against big unwanted volume drops without fighting normal manual adjustments.", 16, false);
         subtitle.setTextColor(Color.rgb(190, 196, 202));
         subtitle.setPadding(0, dp(8), 0, dp(22));
         root.addView(subtitle);
@@ -77,24 +78,28 @@ public class MainActivity extends Activity {
 
         currentLabel = text("Current media volume: —", 15, false);
         currentLabel.setTextColor(Color.rgb(190, 196, 202));
-        currentLabel.setPadding(0, dp(7), 0, dp(26));
+        currentLabel.setPadding(0, dp(7), 0, dp(24));
         root.addView(currentLabel);
 
-        targetLabel = text("Preferred volume: 80%", 19, true);
+        targetLabel = text("Preferred restore volume: 80%", 19, true);
         targetLabel.setTextColor(Color.WHITE);
         root.addView(targetLabel);
 
         targetSeek = new SeekBar(this);
         targetSeek.setMax(100);
         targetSeek.setProgress(prefs.getInt(KEY_TARGET, 80));
-        targetSeek.setPadding(0, dp(8), 0, dp(8));
+        targetSeek.setPadding(0, dp(6), 0, dp(4));
         targetSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                int normalized = Math.max(1, progress);
-                targetLabel.setText("Preferred volume: " + normalized + "%");
+                int target = Math.max(1, progress);
+                targetLabel.setText("Preferred restore volume: " + target + "%");
                 if (fromUser) {
-                    prefs.edit().putInt(KEY_TARGET, normalized).apply();
-                    sendTargetUpdate(normalized);
+                    if (minimumSeek != null && minimumSeek.getProgress() > target) {
+                        minimumSeek.setProgress(target);
+                        prefs.edit().putInt(KEY_MINIMUM, target).apply();
+                    }
+                    prefs.edit().putInt(KEY_TARGET, target).apply();
+                    sendSettingsUpdate();
                 }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) { }
@@ -102,13 +107,55 @@ public class MainActivity extends Activity {
         });
         root.addView(targetSeek);
 
+        TextView targetHelp = text("When Guard intervenes, it restores the volume to this level.", 13, false);
+        targetHelp.setTextColor(Color.rgb(160, 168, 176));
+        targetHelp.setPadding(0, 0, 0, dp(18));
+        root.addView(targetHelp);
+
+        minimumLabel = text("Minimum protected volume: 50%", 19, true);
+        minimumLabel.setTextColor(Color.WHITE);
+        root.addView(minimumLabel);
+
+        minimumSeek = new SeekBar(this);
+        minimumSeek.setMax(100);
+        int initialTarget = Math.max(1, prefs.getInt(KEY_TARGET, 80));
+        int initialMinimum = Math.max(1, Math.min(initialTarget, prefs.getInt(KEY_MINIMUM, 50)));
+        minimumSeek.setProgress(initialMinimum);
+        minimumSeek.setPadding(0, dp(6), 0, dp(4));
+        minimumSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int minimum = Math.max(1, progress);
+                minimumLabel.setText("Minimum protected volume: " + minimum + "%");
+                if (fromUser) {
+                    if (targetSeek != null && minimum > targetSeek.getProgress()) {
+                        targetSeek.setProgress(minimum);
+                        prefs.edit().putInt(KEY_TARGET, minimum).apply();
+                    }
+                    prefs.edit().putInt(KEY_MINIMUM, minimum).apply();
+                    sendSettingsUpdate();
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+        root.addView(minimumSeek);
+
+        TextView minimumHelp = text(
+                "Guard ignores volume changes at or above this level. If volume falls below it, Guard restores your preferred volume.",
+                13,
+                false
+        );
+        minimumHelp.setTextColor(Color.rgb(160, 168, 176));
+        minimumHelp.setPadding(0, 0, 0, dp(16));
+        root.addView(minimumHelp);
+
         TextView warning = text(
-                "Hearing safety: sustained high volume can permanently damage hearing. Volume Guard does not turn off Android's sound-dose tracking or warnings; it only restores the media slider while you intentionally keep the Guard running.",
+                "Hearing safety: sustained high volume can permanently damage hearing. Volume Guard does not disable Android's sound-dose tracking or warnings.",
                 14,
                 false
         );
         warning.setTextColor(Color.rgb(255, 205, 120));
-        warning.setPadding(0, dp(16), 0, dp(12));
+        warning.setPadding(0, dp(8), 0, dp(12));
         root.addView(warning);
 
         acknowledgement = new CheckBox(this);
@@ -124,36 +171,30 @@ public class MainActivity extends Activity {
         startButton = button("START GUARD");
         startButton.setOnClickListener(v -> startGuard());
         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(54)
-        );
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
         buttonParams.setMargins(0, dp(18), 0, dp(10));
         root.addView(startButton, buttonParams);
 
         stopButton = button("STOP GUARD");
         stopButton.setOnClickListener(v -> stopGuard());
         LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(54)
-        );
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
         stopParams.setMargins(0, 0, 0, dp(10));
         root.addView(stopButton, stopParams);
 
         restoreButton = button("RESTORE NOW");
         restoreButton.setOnClickListener(v -> restoreNow());
         LinearLayout.LayoutParams restoreParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(54)
-        );
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
         root.addView(restoreButton, restoreParams);
 
         TextView note = text(
-                "Tip: if you want to lower the volume manually, stop Guard first. While Guard is on, any media-volume drop below your preferred level is treated as something to undo.",
+                "Example: Preferred 85%, Minimum 55%. You can manually lower the volume to 70% and Guard leaves it alone. If it drops below 55%, Guard returns it to 85%.",
                 13,
                 false
         );
         note.setTextColor(Color.rgb(160, 168, 176));
-        note.setPadding(0, dp(22), 0, 0);
+        note.setPadding(0, dp(20), 0, 0);
         root.addView(note);
 
         return root;
@@ -183,11 +224,13 @@ public class MainActivity extends Activity {
         }
 
         int target = Math.max(1, targetSeek.getProgress());
-        prefs.edit().putInt(KEY_TARGET, target).apply();
+        int minimum = Math.max(1, Math.min(target, minimumSeek.getProgress()));
+        prefs.edit().putInt(KEY_TARGET, target).putInt(KEY_MINIMUM, minimum).apply();
 
         Intent intent = new Intent(this, VolumeGuardService.class);
         intent.setAction(VolumeGuardService.ACTION_START);
         intent.putExtra(VolumeGuardService.EXTRA_TARGET_PERCENT, target);
+        intent.putExtra(VolumeGuardService.EXTRA_MINIMUM_PERCENT, minimum);
         startForegroundService(intent);
 
         statusLabel.setText("Status: Starting…");
@@ -206,7 +249,6 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Please acknowledge the hearing-risk warning first.", Toast.LENGTH_SHORT).show();
             return;
         }
-
         if (audioManager.isVolumeFixed()) {
             Toast.makeText(this, "Android reports this device as fixed-volume.", Toast.LENGTH_LONG).show();
             return;
@@ -224,18 +266,26 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void sendTargetUpdate(int target) {
+    private void sendSettingsUpdate() {
         if (!VolumeGuardService.isRunning()) return;
+        int target = Math.max(1, targetSeek.getProgress());
+        int minimum = Math.max(1, Math.min(target, minimumSeek.getProgress()));
+
         Intent intent = new Intent(this, VolumeGuardService.class);
         intent.setAction(VolumeGuardService.ACTION_UPDATE);
         intent.putExtra(VolumeGuardService.EXTRA_TARGET_PERCENT, target);
+        intent.putExtra(VolumeGuardService.EXTRA_MINIMUM_PERCENT, minimum);
         startService(intent);
     }
 
     private void refreshUi() {
         int target = Math.max(1, prefs.getInt(KEY_TARGET, 80));
+        int minimum = Math.max(1, Math.min(target, prefs.getInt(KEY_MINIMUM, 50)));
+
         if (targetSeek != null && targetSeek.getProgress() != target) targetSeek.setProgress(target);
-        if (targetLabel != null) targetLabel.setText("Preferred volume: " + target + "%");
+        if (minimumSeek != null && minimumSeek.getProgress() != minimum) minimumSeek.setProgress(minimum);
+        if (targetLabel != null) targetLabel.setText("Preferred restore volume: " + target + "%");
+        if (minimumLabel != null) minimumLabel.setText("Minimum protected volume: " + minimum + "%");
 
         if (audioManager != null) {
             int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
@@ -258,7 +308,8 @@ public class MainActivity extends Activity {
     }
 
     private void requestNotificationsIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
         }
     }
